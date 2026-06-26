@@ -1,0 +1,10 @@
+{
+  "name": "shairport-mqtt",
+  "version": "0.1.0",
+  "dependencies": [
+    {
+      "name": "paho-mqttpp3",
+      "default-features": false
+    }
+  ]
+}
