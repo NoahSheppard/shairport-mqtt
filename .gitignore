@@ -1,0 +1,25 @@
+# Build output
+build/
+vcpkg_installed/
+CMakeUserPresets.json
+compile_commands.json
+
+# Claude Code / editor state
+.claude/
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Object/binary artifacts
+*.o
+*.obj
+*.exe
+*.out
+*.a
+*.lib
+*.dll
+*.so
+*.pdb
