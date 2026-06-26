@@ -7,5 +7,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(PahoMqttCpp CONFIG REQUIRED)
 
-add_executable(shairport-mqtt src/main.cpp)
+file(GLOB_RECURSE SHAIRPORT_MQTT_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+
+add_executable(shairport-mqtt ${SHAIRPORT_MQTT_SOURCES})
+target_include_directories(shairport-mqtt PRIVATE include)
 target_link_libraries(shairport-mqtt PRIVATE PahoMqttCpp::paho-mqttpp3)
