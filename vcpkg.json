@@ -5,6 +5,14 @@
     {
       "name": "paho-mqttpp3",
       "default-features": false
-    }
+    },
+    {
+      "name": "imgui",
+      "features": [
+        "glfw-binding",
+        "opengl3-binding"
+      ]
+    },
+    "glfw3"
   ]
 }

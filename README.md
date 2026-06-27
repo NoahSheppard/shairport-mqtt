@@ -71,8 +71,12 @@ cache and are fast.
 ## Run
 
 ```sh
-scripts/run.sh linux-debug
+scripts/run-cli.sh linux-debug   # runs shairport-mqtt (CLI)
+scripts/run-gui.sh linux-debug   # runs shairport-mqtt-gui
 ```
+
+Both are thin wrappers around `scripts/run.sh <preset> <target>` (target defaults
+to the CLI if omitted).
 
 For `windows-mingw-cross`, the script runs the `.exe` under `wine` if installed,
 otherwise it just tells you where the binary is so you can copy it to a real
@@ -83,13 +87,73 @@ convenience smoke test here, not the actual target environment.
 ## Project layout
 
 ```
-CMakeLists.txt                       Build definition
+CMakeLists.txt                       Build definition (three targets, see below)
 CMakePresets.json                    linux-debug / linux-release / windows-mingw-cross
-vcpkg.json                           Dependency manifest (paho-mqttpp3)
+vcpkg.json                           Dependency manifest
 cmake/toolchains/mingw-w64-x86_64.cmake  Windows cross-compile toolchain
-src/main.cpp                         Entry point
-scripts/                             setup-env.sh, build.sh, run.sh
+include/shairport-mqtt/              Public headers for the shared core
+src/core/                            Shared logic (target: shairport-mqtt-core, static lib)
+src/cli/main.cpp                     CLI entry point (target: shairport-mqtt)
+src/gui/main.cpp                     GUI entry point (target: shairport-mqtt-gui)
+scripts/                             setup-env.sh, build.sh, run.sh, run-cli.sh, run-gui.sh
 ```
+
+`.cpp` files under `src/core/` are compiled into the `shairport-mqtt-core`
+static library, which both `shairport-mqtt` (CLI) and `shairport-mqtt-gui`
+link against. `.cpp` files under `src/cli/` go into the CLI target;
+`.cpp` files under `src/gui/` go into the GUI target. All three pick up new
+files automatically (no need to edit `CMakeLists.txt` — just re-run
+`cmake --preset <preset>` so it re-globs).
+
+### Shared core
+
+- `NowPlayingStore` (`now_playing.hpp`/`.cpp`) — a mutex-guarded snapshot of
+  artist/album/title/genre/playing state plus playback progress. Written to
+  from the MQTT callback thread, read by the CLI print loop or the GUI render
+  loop.
+- `ShairportMqttClient` (`mqtt_client.hpp`/`.cpp`) — connects to the broker,
+  subscribes to `shairport-sync/#`, and updates a `NowPlayingStore` as
+  messages arrive.
+
+shairport-sync publishes both human-readable topics (`shairport-sync/artist`,
+`/album`, `/title`, `/genre`, `/playing`) and raw DACP/sync topics
+(`shairport-sync/core/*`, `shairport-sync/ssnc/*` — encoded codes, progress
+markers, and binary cover art). Only `artist`/`album`/`title`/`genre`/`playing`
+and `shairport-sync/ssnc/prgr` (progress) are parsed; the rest is ignored
+since the decoded values already cover what the CLI/GUI display.
+
+#### Playback progress
+
+`shairport-sync/ssnc/prgr` is published as `start/current/end`, three RTP
+timestamps (sample counts at AirPlay's fixed 44100Hz). Elapsed/duration are
+derived as `(current-start)/44100` and `(end-start)/44100` and stored in
+`NowPlayingStore`. Because shairport-sync only sends this occasionally (not
+every second), `live_elapsed_seconds()` in `now_playing.hpp` extrapolates
+forward using real elapsed wall-clock time since the last update (only while
+`playing` is true) so the CLI/GUI progress bar ticks smoothly between updates
+instead of jumping.
+
+## GUI stack
+
+The GUI uses [Dear ImGui](https://github.com/ocornut/imgui) with the GLFW +
+OpenGL3 backend — chosen for minimal boilerplate (immediate-mode, no
+signal/slot wiring or layout files) and because that combination cross-compiles
+to Windows via mingw cleanly. It renders live artist/album/title/genre/playing
+state and a playtime/duration progress bar (`ImGui::ProgressBar`) from
+`NowPlayingStore` each frame. The Prev/Play-Pause/Next buttons publish
+remote-control commands over MQTT (see below).
+
+### Sending commands
+
+`ShairportMqttClient::send_command()` publishes to `<topic>/remote`
+(`shairport-sync/remote` here), which is the topic shairport-sync's
+remote-control feature subscribes to. Accepted payloads are exact strings —
+see `ShairportCommand` in `mqtt_client.hpp` (`playpause`, `nextitem`,
+`previtem`, `volumeup`, `volumedown`, ...).
+
+**This requires `enable_remote = "yes";` in the `mqtt` section of
+shairport-sync.conf — it's `"no"` by default**, so the buttons will silently
+do nothing until that's set and shairport-sync is restarted.
 
 ## Roadmap notes
 
@@ -99,5 +163,6 @@ scripts/                             setup-env.sh, build.sh, run.sh
   pulled in transitively either way).
 - The macropad-side transport (raw USB HID, serial/CDC, or global hotkeys from
   QMK-sent keycodes) is still an open decision and will land as its own module.
-- Core logic and any future GUI front-end will be split into a separate library
-  target once the GUI work actually starts — not done speculatively now.
+- Volume up/down commands exist in `ShairportCommand` but have no buttons yet.
+- Album art (`shairport-sync/ssnc/PICT`, assembled between `pcst`/`pcen`
+  markers) is not parsed yet.

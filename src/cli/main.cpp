@@ -1,75 +1,68 @@
-#include <mqtt/async_client.h>
-#include <string>
+#include "shairport-mqtt/mqtt_client.hpp"
+#include "shairport-mqtt/now_playing.hpp"
+
+#include <chrono>
 #include <iostream>
-#include <map>
+#include <string>
+#include <thread>
+
+namespace {
 
 const std::string SERVER_ADDRESS("tcp://192.168.4.169:1883");
 const std::string CLIENT_ID("cpp_subscriber");
-const std::string TOPIC("shairport-sync/#");
-
+// Must match the broker credentials shairport-sync.conf's mqtt section uses —
+// anonymous clients may be able to subscribe but not publish to /remote.
+const std::string MQTT_USERNAME("dev");
+const std::string MQTT_PASSWORD("a");
 const std::string ANSI_CLEAR = "\033[2J\033[H";
 
-std::map<std::string, std::string> track_info = {
-    {"Album", ""},
-    {"Artist", ""},
-    {"Title", ""}
-};
-
-void change() {
-    std::cout << ANSI_CLEAR << std::flush;
-    std::cout << "Title: " << track_info["Title"] << std::endl;
-    std::cout << "Album: " << track_info["Album"] << std::endl;
-    std::cout << "Artist: " << track_info["Artist"] << std::endl;
+bool changed(const NowPlayingInfo& a, const NowPlayingInfo& b) {
+    return a.title != b.title || a.artist != b.artist || a.album != b.album ||
+           a.genre != b.genre || a.playing != b.playing;
 }
 
-class callback : public virtual mqtt::callback {
-    void message_arrived(mqtt::const_message_ptr msg) override {
-        std::cout << "Message received: " << msg->get_topic() << ", " << msg->get_payload_str() << std::endl; // DEBUG
-        // work out what is actually happening 
-        /*if (msg->get_topic() == "shairport-sync/title") {
-            std::cout << "[Task] Changing title to: " << msg->get_payload_str() << std::endl;
-            track_info["Title"] = msg->get_payload_str();
-        } else if (msg->get_topic() == "shairport-sync/artist") {
-            std::cout << "[Task] Changing Artist to: " << msg->get_payload_str() << std::endl;
-            track_info["Artist"] = msg->get_payload_str();
-        } else if (msg->get_topic() == "shairport-sync/album") {
-            std::cout << "[Task] Changing Album to: " << msg->get_payload_str() << std::endl;
-            track_info["Album"] = msg->get_payload_str();
-        }
+std::string progress_bar(double fraction, int width) {
+    int filled = static_cast<int>(fraction * width);
+    return "[" + std::string(filled, '#') + std::string(width - filled, '-') + "]";
+}
 
-        change();*/
-    }
-};
+void print_now_playing(const NowPlayingInfo& info) {
+    double elapsed = live_elapsed_seconds(info);
+    double duration = info.duration_seconds;
+    double fraction = duration > 0.0 ? elapsed / duration : 0.0;
+
+    std::cout << ANSI_CLEAR << std::flush;
+    std::cout << "Title:  " << info.title << "\n";
+    std::cout << "Artist: " << info.artist << "\n";
+    std::cout << "Album:  " << info.album << "\n";
+    std::cout << "Genre:  " << info.genre << "\n";
+    std::cout << "State:  " << (info.playing ? "Playing" : "Paused") << "\n";
+    std::cout << format_mm_ss(elapsed) << " " << progress_bar(fraction, 30) << " " << format_mm_ss(duration)
+               << std::endl;
+}
+
+}  // namespace
 
 int main() {
-    mqtt::async_client client(SERVER_ADDRESS, CLIENT_ID);
-    callback cb;
-    client.set_callback(cb);
-
-    mqtt::connect_options connOpts;
-    connOpts.set_keep_alive_interval(20);
-    connOpts.set_clean_session(true);
+    NowPlayingStore store;
+    ShairportMqttClient client(SERVER_ADDRESS, CLIENT_ID, store, MQTT_USERNAME, MQTT_PASSWORD);
 
     try {
-        // Connect to EMQX broker
-        client.connect(connOpts)->wait();
-        std::cout << "Connected to EMQX broker" << std::endl;
-
-        // Subscribe to topic
-        client.subscribe(TOPIC, 1)->wait();
-        std::cout << "Subscribed to topic: " << TOPIC << std::endl;
-
-        // Keep running to receive messages
-        std::cout << "Press Enter to exit..." << std::endl;
-        std::cin.get();
-
-        // Disconnect
-        client.disconnect()->wait();
-        std::cout << "Disconnected" << std::endl;
+        client.connect();
     } catch (const mqtt::exception& exc) {
         std::cerr << "Error: " << exc.what() << std::endl;
         return 1;
     }
 
-    return 0;
+    std::cout << "Connected and subscribed. Press Ctrl+C to exit." << std::endl;
+
+    NowPlayingInfo last;
+    while (true) {
+        NowPlayingInfo current = store.snapshot();
+        if (changed(current, last) || current.playing) {
+            print_now_playing(current);
+            last = current;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
 }
